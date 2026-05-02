@@ -15,11 +15,7 @@ CROP_SIZE = 224
 
 
 def preprocess(img: Image.Image) -> torch.Tensor:
-    """
-    Applies the same preprocessing used at inference in Step 1.
-    Center crop to CROP_SIZE, convert to tensor, normalize.
-    No augmentations — matches is_training=False in dataset.py.
-    """
+    """No augmentations — matches is_training=False in dataset.py."""
     w, h = img.size
     if w >= CROP_SIZE and h >= CROP_SIZE:
         img = TF.center_crop(img, [CROP_SIZE, CROP_SIZE])
@@ -32,13 +28,12 @@ def preprocess(img: Image.Image) -> torch.Tensor:
 
 
 def load_image(path: str) -> torch.Tensor:
-    """Load a single image from disk and apply inference preprocessing."""
     img = Image.open(path).convert("RGB")
     return preprocess(img)
 
 
 def denormalize(tensor: torch.Tensor) -> torch.Tensor:
-    """Reverse normalization for visualization — returns values in [0, 1]."""
+    """Reverse normalization for visualization."""
     mean = torch.tensor(MEAN).view(3, 1, 1)
     std  = torch.tensor(STD).view(3, 1, 1)
     return (tensor * std + mean).clamp(0, 1)

@@ -1,103 +1,107 @@
-# Step 1 — Train a Domain Discriminator
+# xAI Domain Gap Scoring
 
-Trains a binary image classifier (ResNet18/ConvNeXt/etc.) to discriminate between two image datasets (e.g. real vs. synthetic). Uses ImageNet-pretrained backbones, weighted random sampling, cosine LR scheduling, and early stopping.
+A binary image classifier (ResNet18) is trained to distinguish Cityscapes (real) from GTA5 (synthetic) driving images. The xAI part extracts attribution maps from that classifier and uses them to compute a Domain Gap Score — a measure of where and how much the two domains differ according to the model's decisions.
 
-## Requirements
+**Research question:** Can explainable AI be used to compute a semantically meaningful domain gap score between real and synthetic image datasets?
 
-Install dependencies into a virtual environment:
+---
+
+## Datasets
+
+**Cityscapes** (real, label 0): `leftImg8bit_trainvaltest/leftImg8bit/{train,val,test}/{city}/`  
+**GTA5 / Playing for Data** (synthetic, label 1): `images/` — flat directory, ~2500 files
+
+Splits: 800 train / 100 val / 100 test per dataset, random shuffle. The model was trained on an HPC cluster. `best_model.pt` is in the project root. Test accuracy: 100% (200/200).
+
+---
+
+## xAI methods tested
+
+Three attribution methods were implemented and evaluated with the Adebayo et al. (2018) sanity check. The test progressively randomizes model layers from output to input and measures whether the attribution map changes. A method passes if the Spearman ρ drops below 0.3 after full randomization.
+
+| Method | REAL ρ | SYNTH ρ | Result |
+| --- | --- | --- | --- |
+| Grad-CAM layer3 | −0.43 | −0.11 | **PASS — selected** |
+| Integrated Gradients + SmoothGrad | 0.19 | 0.47 | fail |
+| ScoreCAM top-128 channels | 0.11 | 0.45 | fail |
+
+IG and ScoreCAM fail on synthetic images. GTA5's regular computer-rendered textures create spatially consistent feature maps even after full model randomization, so the attribution maps reflect input structure rather than model decisions. Grad-CAM avoids this because it uses gradient flow rather than activation patterns directly.
+
+**Selected method: Grad-CAM at `model.backbone.layer3[-1]` (14×14 resolution, 256 channels).**
+
+---
+
+## Environment
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install torch torchvision tqdm numpy pillow
+conda activate ki
 ```
 
-## Data layout
-
-Each dataset must be a flat directory of images (`.jpg`, `.jpeg`, `.png`, `.bmp`). Subdirectories are not traversed. Example:
-
-```
-data/
-  dataset_a/   ← label 0 ("real")
-    img001.jpg
-    img002.jpg
-    ...
-  dataset_b/   ← label 1 ("synthetic")
-    img001.jpg
-    ...
-```
-
-## Running training
+All scripts must be run from the project root. On macOS, PyTorch and the system OpenMP library conflict, so every command needs the prefix:
 
 ```bash
-python train.py \
-  --cityscapes-path /path/to/dataset_a \
-  --gta-path        /path/to/dataset_b \
-  --backbone        resnet18 \
-  --output-dir      outputs/my_run
+KMP_DUPLICATE_LIB_OK=TRUE /opt/anaconda3/envs/ki/bin/python <script>
 ```
 
-The script:
-1. Discovers images in both directories.
-2. Creates reproducible train / val / test splits (800 / 100 / 100 per dataset by default).
-3. Trains the model and saves checkpoints to `<output-dir>/checkpoints/`.
-4. Evaluates the best checkpoint on the test set and writes `test_results.json`.
+---
 
-## All arguments
+## Key scripts
 
-| Argument | Default | Description |
-|---|---|---|
-| `--cityscapes-path` | — | Path to dataset A (label 0) |
-| `--gta-path` | — | Path to dataset B (label 1) |
-| `--backbone` | `resnet18` | Architecture: `resnet18`, `resnet34`, `resnet50`, `resnet101`, `convnext_tiny`, `convnext_small`, `convnext_base`, `convnext_large`, `vit_b_16`, `vit_b_32`, `vit_l_16`, `vit_l_32` |
-| `--preprocess-mode` | `crop` | How to standardise image size: `crop` (random/center crop), `resize` (stretch), `pad` (pad to square + crop if larger) |
-| `--crop-size` | `224` | Crop size (used when `--preprocess-mode crop`) |
-| `--resize-size` | `384` | Target size (used when `--preprocess-mode resize`) |
-| `--pad-size` | `200` | Target size (used when `--preprocess-mode pad`) |
-| `--batch-size` | `32` | Training batch size |
-| `--epochs` | `50` | Maximum number of epochs |
-| `--lr` | `1e-4` | Base learning rate (backbone gets 0.1×) |
-| `--patience` | `7` | Early-stopping patience (epochs without val-loss improvement) |
-| `--device` | auto | `cuda` or `cpu` |
-| `--no-amp` | off | Disable automatic mixed precision (AMP) |
-| `--output-dir` | `outputs` | Directory for checkpoints and result files |
-| `--seed` | `42` | Random seed for reproducibility |
-
-## Outputs
-
-```
-<output-dir>/
-  config.json           — run configuration
-  splits.json           — train/val/test file paths and labels
-  test_results.json     — accuracy, F1, confusion matrix on test set
-  checkpoints/
-    best_model.pt       — best checkpoint (lowest val loss)
-    checkpoint_epoch_N.pt
-    training_history.json
-```
-
-## Examples
-
-**ConvNeXt-Tiny with padding preprocessing:**
+**Grad-CAM heatmaps:**
 ```bash
-python train.py \
-  --cityscapes-path data/real \
-  --gta-path        data/synthetic \
-  --backbone        convnext_tiny \
-  --preprocess-mode pad \
-  --pad-size        256 \
-  --batch-size      64 \
-  --epochs          100 \
-  --output-dir      outputs/convnext_pad
+KMP_DUPLICATE_LIB_OK=TRUE /opt/anaconda3/envs/ki/bin/python xai/gradcam.py
+```
+Saves `outputs/figures/gradcam_real_layer3.png` and `gradcam_synthetic_layer3.png`.
+
+**Sanity checks:**
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE /opt/anaconda3/envs/ki/bin/python xai/sanity_checks.py
+```
+Edit the `METHODS` list at the top of the file to choose what to test (`"gradcam"`, `"ig"`, `"scorecam"`, or any combination).
+
+**Insertion / deletion curves:**
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE /opt/anaconda3/envs/ki/bin/python xai/insertion_deletion.py
+```
+Saves `outputs/figures/insertion_deletion.png`. Grad-CAM insertion AUC = 0.629 vs random 0.562.
+
+**Qualitative grid + mean attribution maps:**
+```bash
+KMP_DUPLICATE_LIB_OK=TRUE /opt/anaconda3/envs/ki/bin/python xai/gradcam_qualitative.py
+```
+Saves a 4×5 grid (10 real, 10 synthetic) and mean attribution maps over 20 images each.
+
+---
+
+## File structure
+
+```
+step1/
+  best_model.pt               trained checkpoint
+  config.json                 training config from HPC run
+  experiment_log.md           full research log — steps A through E
+
+  xai/
+    gradcam.py                Grad-CAM implementation and smoke test
+    integrated_gradients.py   IG with trapezoidal integration and completeness check
+    scorecam.py               ScoreCAM — gradient-free, 512 forward passes per image
+    sanity_checks.py          Adebayo et al. cascading randomization test
+    insertion_deletion.py     Petsiuk et al. insertion/deletion curves
+    gradcam_qualitative.py    qualitative grid and mean attribution maps
+
+  utils/
+    preprocessing.py          load_image(), normalization constants — shared across all xAI scripts
+
+  outputs/
+    figures/                  saved heatmaps and plots
+
+  scoring/
+    (Step F onward — DGS computation, not yet started)
 ```
 
-**ResNet18 on CPU (no AMP):**
-```bash
-python train.py \
-  --cityscapes-path data/real \
-  --gta-path        data/synthetic \
-  --backbone        resnet18 \
-  --device          cpu \
-  --no-amp \
-  --output-dir      outputs/resnet18_cpu
-```
+---
+
+## Status
+
+Steps A–E complete. Grad-CAM layer3 is confirmed as the attribution method for DGS.  
+Next: Step F — extract Grad-CAM maps over the full test set and compute the DGS.

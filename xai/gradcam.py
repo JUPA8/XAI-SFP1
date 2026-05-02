@@ -18,11 +18,12 @@ from model import create_model
 from utils.preprocessing import load_image, denormalize
 
 # ---- paths and settings ----
-CHECKPOINT  = "best_model.pt"
-REAL_IMG    = "leftImg8bit_trainvaltest/leftImg8bit/train/aachen/aachen_000000_000019_leftImg8bit.png"
-SYNTH_IMG   = "images/00001.png"
-OUT_DIR     = Path("outputs/figures")
-DEVICE      = "cuda" if torch.cuda.is_available() else "cpu"
+CHECKPOINT    = "best_model.pt"
+REAL_IMG      = "leftImg8bit_trainvaltest/leftImg8bit/train/aachen/aachen_000000_000019_leftImg8bit.png"
+SYNTH_IMG     = "images/00001.png"
+OUT_DIR       = Path("outputs/figures")
+DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
+GRADCAM_LAYER = "layer3"   # "layer3" (14×14, 256ch) or "layer4" (7×7, 512ch)
 # ----------------------------
 
 
@@ -34,20 +35,23 @@ def load_model():
     return model.to(DEVICE)
 
 
-def gradcam(model, img_tensor):
+def resolve_layer(model, name):
+    return {"layer3": model.backbone.layer3[-1],
+            "layer4": model.backbone.layer4[-1]}[name]
+
+
+def gradcam(model, img_tensor, layer=None):
     """
     Grad-CAM: global-average-pooled gradients weight the feature maps
     at the target layer. (Selvaraju et al. 2017, eq. 1-3)
 
     Backprops through the predicted class score (not always the synthetic
     logit) so that real-image CAMs are not killed by the ReLU.
-
-    Returns (cam, logit_val) where cam is a 2D numpy array (pre-resize).
     """
     activations = {}
     gradients   = {}
 
-    target = model.backbone.layer4[-1]  # last BasicBlock of ResNet18 layer4
+    target = layer if layer is not None else resolve_layer(model, GRADCAM_LAYER)
 
     h_fwd = target.register_forward_hook(
         lambda m, inp, out: activations.update({"feat": out.clone()})
@@ -70,17 +74,18 @@ def gradcam(model, img_tensor):
     h_fwd.remove()
     h_bwd.remove()
 
-    feat = activations["feat"].squeeze(0)   # (512, 7, 7)
-    grad = gradients["grad"].squeeze(0)     # (512, 7, 7)
+    feat = activations["feat"].squeeze(0)   # (C, H, W) — depends on target layer
+    grad = gradients["grad"].squeeze(0)     # (C, H, W)
 
     # Diagnostics — confirm gradients are non-zero
     print(f"  logit: {logit.item():.4f}  →  predicted: {'synthetic' if logit.item() > 0 else 'real'}")
+    print(f"  layer: {target.__class__.__name__}  feat: {tuple(feat.shape)}")
     print(f"  grad  |mean|: {grad.abs().mean():.6f}   max: {grad.abs().max():.6f}")
     print(f"  feat  |mean|: {feat.abs().mean():.4f}    max: {feat.abs().max():.4f}")
 
     # alpha_k = mean gradient per channel (Selvaraju et al. 2017 eq. 1)
-    weights = grad.mean(dim=(1, 2))                        # (512,)
-    cam_raw = (weights[:, None, None] * feat).sum(dim=0)  # (7, 7)
+    weights = grad.mean(dim=(1, 2))                        # (C,)
+    cam_raw = (weights[:, None, None] * feat).sum(dim=0)  # (H, W)
     print(f"  CAM pre-ReLU — min: {cam_raw.min():.4f}  max: {cam_raw.max():.4f}")
 
     cam = F.relu(cam_raw).detach().cpu().numpy()
@@ -88,7 +93,6 @@ def gradcam(model, img_tensor):
 
 
 def overlay(img_tensor, cam):
-    """Resize CAM to image size and blend with original image for display."""
     rgb = denormalize(img_tensor).permute(1, 2, 0).numpy()   # (H, W, 3)
     h, w = rgb.shape[:2]
 
@@ -126,9 +130,10 @@ if __name__ == "__main__":
 
     print("Loading model...")
     model = load_model()
-    print(f"  device: {DEVICE}")
+    print(f"  device: {DEVICE}  |  target layer: {GRADCAM_LAYER}")
 
-    run("REAL",      REAL_IMG,  model, OUT_DIR / "gradcam_real.png")
-    run("SYNTHETIC", SYNTH_IMG, model, OUT_DIR / "gradcam_synthetic.png")
+    suffix = f"_{GRADCAM_LAYER}"   # e.g. _layer3 or _layer4
+    run("REAL",      REAL_IMG,  model, OUT_DIR / f"gradcam_real{suffix}.png")
+    run("SYNTHETIC", SYNTH_IMG, model, OUT_DIR / f"gradcam_synthetic{suffix}.png")
 
     print("\nDone.")
