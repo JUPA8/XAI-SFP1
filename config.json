@@ -1,0 +1,25 @@
+{
+  "data": {
+    "cityscapes_path": "/cluster/groups/l_iui_jschoeni_sfp-abdahmed_ss26/student_research_1/data/cityscapes_images",
+    "gta_path": "/cluster/groups/l_iui_jschoeni_sfp-abdahmed_ss26/student_research_1/data/images",
+    "crop_size": 224,
+    "preprocess_mode": "crop",
+    "resize_size": 384,
+    "pad_size": 200,
+    "train_count": 800,
+    "val_count": 100,
+    "test_count": 100
+  },
+  "model": {
+    "backbone": "resnet18",
+    "hidden_dim": 512,
+    "dropout": 0.3
+  },
+  "training": {
+    "batch_size": 32,
+    "max_epochs": 20,
+    "learning_rate": 0.0001,
+    "early_stopping_patience": 7,
+    "use_amp": true
+  }
+}
